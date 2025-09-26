@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>陪課紀錄管理</title>
+    <!-- Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        .container {
+            max-width: 960px;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-8 min-h-screen flex items-center justify-center">
+
+    <div class="container bg-white shadow-xl rounded-2xl p-8 md:p-12 w-full">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-6">陪課紀錄管理</h1>
+        <p class="text-sm text-center text-gray-500 mb-8">
+            使用者ID: <span id="user-id-display" class="font-mono text-gray-700 break-all">...</span>
+        </p>
+
+        <!-- Form for adding new record -->
+        <div class="bg-gray-50 p-6 rounded-lg mb-8 border border-gray-200">
+            <h2 class="text-2xl font-semibold text-gray-700 mb-4" id="form-title">新增陪課紀錄</h2>
+            <form id="schedule-form" class="space-y-4">
+                <input type="hidden" id="doc-id">
+                <div>
+                    <label for="date-time" class="block text-sm font-medium text-gray-700">時間</label>
+                    <input type="datetime-local" id="date-time" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 border">
+                </div>
+                <div>
+                    <label for="student" class="block text-sm font-medium text-gray-700">陪課對象</label>
+                    <input type="text" id="student" placeholder="請輸入學生姓名" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 border">
+                </div>
+                <div>
+                    <label for="tutor" class="block text-sm font-medium text-gray-700">陪課者</label>
+                    <input type="text" id="tutor" placeholder="請輸入陪課者姓名" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 border">
+                </div>
+                <button type="submit" id="submit-button" class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition ease-in-out duration-150">
+                    新增紀錄
+                </button>
+                <button type="button" id="cancel-button" class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-indigo-600 bg-transparent hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition ease-in-out duration-150 hidden">
+                    取消編輯
+                </button>
+            </form>
+            <div id="message-box" class="mt-4 p-3 rounded-md text-sm hidden"></div>
+        </div>
+
+        <!-- List of records -->
+        <div class="bg-white p-6 rounded-lg border border-gray-200 shadow-sm">
+            <h2 class="text-2xl font-semibold text-gray-700 mb-4">所有陪課紀錄</h2>
+            <div id="record-list" class="space-y-4">
+                <div id="loading" class="text-center text-gray-500">
+                    載入中...
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, getDoc, doc, updateDoc, deleteDoc, onSnapshot, query, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // 設定 Firebase 變數
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(__firebase_config);
+
+        // 初始化 Firebase 服務
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        setLogLevel('debug'); // 啟用 Firestore 偵錯日誌
+
+        let userId = null;
+        const form = document.getElementById('schedule-form');
+        const recordList = document.getElementById('record-list');
+        const loadingIndicator = document.getElementById('loading');
+        const formTitle = document.getElementById('form-title');
+        const submitButton = document.getElementById('submit-button');
+        const cancelButton = document.getElementById('cancel-button');
+        const messageBox = document.getElementById('message-box');
+        const userIdDisplay = document.getElementById('user-id-display');
+
+        // 處理訊息提示
+        function showMessage(message, isError = false) {
+            messageBox.textContent = message;
+            messageBox.classList.remove('hidden');
+            if (isError) {
+                messageBox.className = 'mt-4 p-3 rounded-md text-sm bg-red-100 text-red-700';
+            } else {
+                messageBox.className = 'mt-4 p-3 rounded-md text-sm bg-green-100 text-green-700';
+            }
+        }
+
+        // 監聽 Firebase 身份驗證狀態
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                userId = user.uid;
+                userIdDisplay.textContent = userId;
+                console.log("Firebase authenticated. User ID:", userId);
+
+                // 啟動資料監聽器
+                setupRealtimeListener(userId);
+            } else {
+                // 如果沒有登入，使用自訂憑證或匿名登入
+                try {
+                    if (typeof __initial_auth_token !== 'undefined') {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                } catch (error) {
+                    console.error("Firebase 認證失敗:", error);
+                    showMessage("認證失敗，請重新整理頁面。", true);
+                }
+            }
+        });
+
+        // 設定即時資料監聽器
+        function setupRealtimeListener(currentUserId) {
+            const recordsCollectionRef = collection(db, `artifacts/${appId}/users/${currentUserId}/tutoring-sessions`);
+            const q = query(recordsCollectionRef);
+
+            onSnapshot(q, (querySnapshot) => {
+                const records = [];
+                querySnapshot.forEach((doc) => {
+                    records.push({ id: doc.id, ...doc.data() });
+                });
+                displayRecords(records);
+            }, (error) => {
+                console.error("即時監聽失敗:", error);
+                showMessage("無法載入資料，請檢查連線。", true);
+            });
+        }
+
+        // 在網頁上顯示紀錄
+        function displayRecords(records) {
+            recordList.innerHTML = '';
+            if (records.length === 0) {
+                recordList.innerHTML = `<div class="p-4 text-center text-gray-500">目前沒有任何紀錄。</div>`;
+                return;
+            }
+
+            records.sort((a, b) => new Date(a.dateTime) - new Date(b.dateTime));
+
+            records.forEach(record => {
+                const recordElement = document.createElement('div');
+                recordElement.className = 'p-4 bg-white border border-gray-200 rounded-md shadow-sm flex flex-col sm:flex-row items-center justify-between space-y-2 sm:space-y-0';
+                
+                const formattedTime = new Date(record.dateTime).toLocaleString('zh-TW', {
+                    year: 'numeric', month: 'numeric', day: 'numeric',
+                    hour: 'numeric', minute: 'numeric', hour12: false
+                });
+
+                recordElement.innerHTML = `
+                    <div class="flex-grow w-full sm:w-auto">
+                        <p class="text-sm font-medium text-gray-900 mb-1">
+                            <span class="text-gray-500">時間:</span> ${formattedTime}
+                        </p>
+                        <p class="text-sm text-gray-700">
+                            <span class="text-gray-500">對象:</span> ${record.student}
+                        </p>
+                        <p class="text-sm text-gray-700">
+                            <span class="text-gray-500">陪課者:</span> ${record.tutor}
+                        </p>
+                    </div>
+                    <div class="flex space-x-2 mt-2 sm:mt-0">
+                        <button class="edit-btn py-1 px-3 text-sm font-medium rounded-md text-indigo-600 hover:bg-indigo-100 transition ease-in-out duration-150" data-id="${record.id}">
+                            編輯
+                        </button>
+                        <button class="delete-btn py-1 px-3 text-sm font-medium rounded-md text-red-600 hover:bg-red-100 transition ease-in-out duration-150" data-id="${record.id}">
+                            刪除
+                        </button>
+                    </div>
+                `;
+                recordList.appendChild(recordElement);
+            });
+
+            // 為新元素添加事件監聽器
+            document.querySelectorAll('.edit-btn').forEach(button => {
+                button.addEventListener('click', handleEdit);
+            });
+            document.querySelectorAll('.delete-btn').forEach(button => {
+                button.addEventListener('click', handleDelete);
+            });
+            loadingIndicator.style.display = 'none';
+        }
+
+        // 處理表單提交（新增或更新）
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            showMessage("處理中...", false);
+            const docId = document.getElementById('doc-id').value;
+            const dateTime = document.getElementById('date-time').value;
+            const student = document.getElementById('student').value;
+            const tutor = document.getElementById('tutor').value;
+            
+            const record = {
+                dateTime,
+                student,
+                tutor,
+                createdAt: new Date().toISOString()
+            };
+
+            const recordsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/tutoring-sessions`);
+            
+            try {
+                if (docId) {
+                    // 更新現有紀錄
+                    await updateDoc(doc(recordsCollectionRef, docId), record);
+                    showMessage("紀錄已更新！");
+                } else {
+                    // 新增新紀錄
+                    await addDoc(recordsCollectionRef, record);
+                    showMessage("新紀錄已新增！");
+                }
+                form.reset();
+                cancelEditMode();
+            } catch (error) {
+                console.error("提交失敗:", error);
+                showMessage("儲存失敗，請重試。", true);
+            }
+        });
+
+        // 進入編輯模式
+        async function handleEdit(e) {
+            const docId = e.target.getAttribute('data-id');
+            const recordsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/tutoring-sessions`);
+            const docRef = doc(recordsCollectionRef, docId);
+            
+            try {
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    document.getElementById('doc-id').value = docId;
+                    document.getElementById('date-time').value = data.dateTime;
+                    document.getElementById('student').value = data.student;
+                    document.getElementById('tutor').value = data.tutor;
+
+                    // 改變表單UI到編輯模式
+                    formTitle.textContent = "編輯陪課紀錄";
+                    submitButton.textContent = "更新紀錄";
+                    cancelButton.classList.remove('hidden');
+                    showMessage("正在編輯紀錄...", false);
+                }
+            } catch (error) {
+                console.error("讀取紀錄失敗:", error);
+                showMessage("讀取紀錄失敗，請重試。", true);
+            }
+        }
+
+        // 取消編輯模式
+        function cancelEditMode() {
+            document.getElementById('doc-id').value = '';
+            form.reset();
+            formTitle.textContent = "新增陪課紀錄";
+            submitButton.textContent = "新增紀錄";
+            cancelButton.classList.add('hidden');
+            messageBox.classList.add('hidden');
+        }
+
+        // 處理刪除
+        async function handleDelete(e) {
+            const docId = e.target.getAttribute('data-id');
+            const recordsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/tutoring-sessions`);
+            const docRef = doc(recordsCollectionRef, docId);
+
+            if (confirm('確定要刪除這筆紀錄嗎？')) {
+                showMessage("刪除中...", false);
+                try {
+                    await deleteDoc(docRef);
+                    showMessage("紀錄已刪除！");
+                } catch (error) {
+                    console.error("刪除失敗:", error);
+                    showMessage("刪除失敗，請重試。", true);
+                }
+            }
+        }
+        
+        // 綁定取消按鈕事件
+        cancelButton.addEventListener('click', cancelEditMode);
+
+    </script>
+</body>
+</html>
